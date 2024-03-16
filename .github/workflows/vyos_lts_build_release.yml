@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: UTC
-      BUILDER_REFS: 1.4.0-epa1
+      BUILDER_REFS: 1.4.0-epa2
       RELEASE_TRAIN: sagitta
       RELEASE_VERSION: 1.4
       
@@ -24,7 +24,9 @@ jobs:
       run: |
         set -eux
 
-        git clone --branch "$BUILDER_REFS" --single-branch https://github.com/vyos/vyos-build
+        git clone --branch "$BUILDER_REFS" --single-branch https://github.com/vyos/vyos-build.git vyos-build
+        cd vyos-build
+        git checkout -B "$BUILDER_REFS"
 
     - id: build_iso
       name: Build iso
@@ -32,18 +34,8 @@ jobs:
         set -eux
 
         mkdir ./vyos-build/build/
-        touch ./vyos-build/build/dummy
-
 
         docker image pull docker.io/vyos/vyos-build:"$RELEASE_TRAIN"
-
-        docker container run --rm --privileged -v "$PWD"/vyos-build/:/vyos -w /vyos docker.io/vyos/vyos-build:"$RELEASE_TRAIN" \
-        sudo --preserve-env --chdir /vyos \
-        ls -al
-
-        docker container run --rm --privileged -v "$PWD"/vyos-build/:/vyos -w /vyos docker.io/vyos/vyos-build:"$RELEASE_TRAIN" \
-        sudo --preserve-env --chdir /vyos \
-        ls -al build
 
         docker container run --rm --privileged -v "$PWD"/vyos-build/:/vyos -w /vyos docker.io/vyos/vyos-build:"$RELEASE_TRAIN" \
         sudo --preserve-env \
