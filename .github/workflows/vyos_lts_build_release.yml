@@ -1,7 +1,23 @@
 name: VyOS Build
 
 on:
-  push:
+  workflow_dispatch:
+    inputs:
+      builder_refs:
+        description: 'Git refs of vyos/vyos-build repository'
+        required: true
+        type: string
+        default: 1.4.0-epa2
+
+      arch:
+        description: 'Architecture of image'
+        required: true
+        type: choice
+        default: amd64
+        options:
+          - amd64
+          - arm64
+
 
 jobs:
   build:
@@ -9,10 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: UTC
-      BUILDER_REFS: 1.4.0-epa2
       RELEASE_TRAIN: sagitta
       RELEASE_VERSION: 1.4
-      
+
 
     steps:
     - name: Set env
@@ -20,13 +35,48 @@ jobs:
         env
         echo "BUILD_VERSION=${RELEASE_VERSION}-rolling-$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
 
-    - name: git clone vyos-build
-      run: |
-        set -eux
+    - id: clone_vyos-build
+      name: Clone vyos-build
+      uses: actions/checkout@v4
+      with:
+        repository: vyos/vyos-build
+        path: vyos-build
+        ref: ${{ inputs.builder_refs }}
 
-        git clone --branch "$BUILDER_REFS" --single-branch https://github.com/vyos/vyos-build.git vyos-build
+    # build-vyos-image fails with "Could not retrieve information from git: HEAD is a detached symbolic reference ..."
+    - id: switch_to_branch
+      name: Switch to branch
+      run: |
         cd vyos-build
-        git checkout -B "$BUILDER_REFS"
+        git checkout -B ${{ inputs.builder_refs }}
+
+
+    - id: pull_build-container-image
+      name: Pull vyos-build contaimer image
+      run: |
+        container_image_tag="${{ env.RELEASE_TRAIN }}-${{ inputs.arch }}"
+        if [[ "amd64" == "${{ inputs.arch }}" ]]; then
+          container_image_tag="${{ env.RELEASE_TRAIN }}"
+        fi
+
+        docker image pull docker.io/vyos/vyos-build:"$container_image_tag"
+        docker image tag docker.io/vyos/vyos-build:"$container_image_tag" localhost/vyos-build:latest
+
+    - id: setup_multiarch
+      name: Setup multiarch build
+      uses: docker/setup-qemu-action@v3
+      if: ${{ env.RUNNER_ARCH != 'ARM64' && inputs.arch == 'arm64' }}
+      with:
+        platforms: arm64
+
+    - id: patch
+      name: Patch
+      run: |
+        cd vyos-build/
+
+        if [[ "arm64" == "${{ inputs.arch }}" ]]; then
+            sed -e '/"vyos-xe-guest-utilities",/d' -i data/build-flavors/iso.toml
+        fi
 
     - id: build_iso
       name: Build iso
@@ -35,12 +85,10 @@ jobs:
 
         mkdir ./vyos-build/build/
 
-        docker image pull docker.io/vyos/vyos-build:"$RELEASE_TRAIN"
-
-        docker container run --rm --privileged -v "$PWD"/vyos-build/:/vyos -w /vyos docker.io/vyos/vyos-build:"$RELEASE_TRAIN" \
+        docker container run --rm --privileged -v "$PWD"/vyos-build/:/vyos -w /vyos localhost/vyos-build:latest \
         sudo --preserve-env \
         ./build-vyos-image \
-          --architecture amd64 \
+          --architecture ${{ inputs.arch }} \
           --build-type release \
           --version "$BUILD_VERSION" \
           iso \
@@ -48,25 +96,25 @@ jobs:
 
         ls -al ./vyos-build/build/
 
-        mv ./vyos-build/build/live-image-amd64.hybrid.iso ./vyos-"$BUILD_VERSION"-amd64.iso
+        mv ./vyos-build/build/live-image-${{ inputs.arch }}.hybrid.iso ./vyos-"$BUILD_VERSION"-${{ inputs.arch }}.iso
 
 
     - id: upload_iso_artifact
       name: "Uploading artifacts: ISO image to GitHub"
       uses: actions/upload-artifact@v4
       with:
-        name: vyos-${{ env.BUILD_VERSION }}-amd64.iso
-        path: ./vyos-${{ env.BUILD_VERSION }}-amd64.iso
+        name: vyos-${{ env.BUILD_VERSION }}-${{ inputs.arch }}.iso
+        path: ./vyos-${{ env.BUILD_VERSION }}-${{ inputs.arch }}.iso
         retention-days: 30
         if-no-files-found: error
 
 
     - id: publish_release
       name: "Release publishing: publish release"
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.BUILD_VERSION }}
         fail_on_unmatched_files: true
         files: |
-          ./vyos-${{ env.BUILD_VERSION }}-amd64.iso
+          ./vyos-${{ env.BUILD_VERSION }}-${{ inputs.arch }}.iso
 
